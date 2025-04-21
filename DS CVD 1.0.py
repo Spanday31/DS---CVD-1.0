@@ -22,12 +22,28 @@ INTERVENTIONS = [
         "mechanism": "Reduces platelet aggregation",
         "contraindications": ["Active bleeding", "Warfarin use"],
         "source": "CAPRIE Lancet 1996 (PMID: 8918275)"
+    },
+    {
+        "name": "Mediterranean diet",
+        "arr_5yr": 3,
+        "arr_lifetime": 10,
+        "mechanism": "Improves lipid profile and reduces inflammation",
+        "source": "PREDIMED NEJM 2018 (PMID: 29897866)"
+    },
+    {
+        "name": "Exercise",
+        "arr_5yr": 4,
+        "arr_lifetime": 12,
+        "mechanism": "Improves cardiovascular fitness and metabolic health",
+        "source": "HUNT Study, Br J Sports Med 2019 (PMID: 30782506)"
     }
 ]
 
 LDL_THERAPIES = {
     "Atorvastatin 20 mg": {"reduction": 40, "source": "STELLAR JAMA 2003 (PMID: 14699082)"},
-    "Atorvastatin 80 mg": {"reduction": 50, "source": "TNT NEJM 2005 (PMID: 15930428)"}
+    "Atorvastatin 80 mg": {"reduction": 50, "source": "TNT NEJM 2005 (PMID: 15930428)"},
+    "Rosuvastatin 10 mg": {"reduction": 45, "source": "JUPITER NEJM 2008 (PMID: 18997196)"},
+    "Rosuvastatin 20-40 mg": {"reduction": 55, "source": "SATURN NEJM 2011 (PMID: 22010916)"}
 }
 
 EVIDENCE_DB = {
@@ -76,6 +92,14 @@ def calculate_ldl_effect(baseline_risk, baseline_ldl, final_ldl):
         st.error(f"Error calculating LDL effect: {str(e)}")
         return baseline_risk
 
+def get_intervention(name):
+    """Safe intervention lookup with error handling"""
+    try:
+        return next(iv for iv in INTERVENTIONS if iv["name"] == name)
+    except StopIteration:
+        st.warning(f"Intervention '{name}' not found in database")
+        return None
+
 def calculate_combined_effect(baseline_risk, active_interventions, horizon):
     """Diminishing returns model for multiple interventions"""
     try:
@@ -117,32 +141,78 @@ def main():
         page_icon="❤️"
     )
     
-    # Initialize session state
-    initialize_session_state()
-    
-    # Custom CSS
+    # Custom CSS for visibility
     st.markdown("""
     <style>
-        .risk-high { border-left: 4px solid #d9534f; padding: 1rem; background-color: #fdf7f7; margin: 1rem 0; }
-        .risk-medium { border-left: 4px solid #f0ad4e; padding: 1rem; background-color: #fffbf5; margin: 1rem 0; }
-        .risk-low { border-left: 4px solid #5cb85c; padding: 1rem; background-color: #f8fdf8; margin: 1rem 0; }
-        .therapy-card { border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-        .header-box { background-color: #f0f2f6; padding: 1.5rem; border-radius: 10px; margin-bottom: 2rem; }
-        .footer { font-size: 0.8rem; color: #666; margin-top: 2rem; border-top: 1px solid #eee; padding-top: 1rem; }
+        h1, h2, h3, h4, h5, h6 {
+            color: #333333 !important;
+        }
+        .risk-high { 
+            border-left: 4px solid #d9534f; 
+            padding: 1rem; 
+            background-color: #fdf7f7; 
+            margin: 1rem 0; 
+            color: #333333;
+        }
+        .risk-medium { 
+            border-left: 4px solid #f0ad4e; 
+            padding: 1rem; 
+            background-color: #fffbf5; 
+            margin: 1rem 0; 
+            color: #333333;
+        }
+        .risk-low { 
+            border-left: 4px solid #5cb85c; 
+            padding: 1rem; 
+            background-color: #f8fdf8; 
+            margin: 1rem 0; 
+            color: #333333;
+        }
+        .therapy-card { 
+            border-radius: 10px; 
+            padding: 1.5rem; 
+            margin-bottom: 1.5rem; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            background-color: #ffffff;
+        }
+        .header-box { 
+            background-color: #f0f2f6; 
+            padding: 1.5rem; 
+            border-radius: 10px; 
+            margin-bottom: 2rem; 
+        }
+        .footer { 
+            font-size: 0.8rem; 
+            color: #555555 !important; 
+            margin-top: 2rem; 
+            border-top: 1px solid #eee; 
+            padding-top: 1rem; 
+        }
+        body {
+            color: #333333 !important;
+        }
+        .sidebar .sidebar-content {
+            background-color: #f8f9fa;
+        }
+        .streamlit-expanderHeader {
+            color: #333333 !important;
+            font-weight: 600 !important;
+        }
     </style>
     """, unsafe_allow_html=True)
+    
+    # Initialize session state
+    initialize_session_state()
     
     # Header
     st.markdown("""
     <div class="header-box">
-        <h1 style="margin:0;">PRIME SMART-2 CVD Risk Calculator</h1>
-        <p style="margin:0;color:#666;">Secondary Prevention After Myocardial Infarction</p>
+        <h1 style="margin:0;color:#333333;">PRIME SMART-2 CVD Risk Calculator</h1>
+        <p style="margin:0;color:#555555;">Secondary Prevention After Myocardial Infarction</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # ======================
-    # SIDEBAR - INPUTS
-    # ======================
+    # Sidebar - Inputs
     with st.sidebar:
         st.header("Patient Profile")
         
@@ -177,9 +247,7 @@ def main():
         # View Mode
         st.session_state.patient_mode = st.checkbox("Patient-friendly view")
     
-    # ======================
-    # MAIN CONTENT
-    # ======================
+    # Main Content
     tab1, tab2 = st.tabs(["Risk Assessment", "Treatment Optimization"])
     
     with tab1:
@@ -190,9 +258,9 @@ def main():
         if baseline_risk is not None:
             # Apply time horizon
             if horizon == "5yr":
-                baseline_risk = baseline_risk * 0.6  # Simplified conversion
+                baseline_risk = baseline_risk * 0.6
             elif horizon == "lifetime":
-                baseline_risk = min(baseline_risk * 1.8, 90)  # Cap at 90%
+                baseline_risk = min(baseline_risk * 1.8, 90)
             
             baseline_risk = round(baseline_risk, 1)
             
@@ -238,7 +306,8 @@ def main():
             with col1:
                 statin = st.selectbox(
                     "Statin Intensity",
-                    ["None", "Atorvastatin 20 mg", "Atorvastatin 80 mg", "Rosuvastatin 10 mg", "Rosuvastatin 20-40 mg"],
+                    ["None", "Atorvastatin 20 mg", "Atorvastatin 80 mg", 
+                     "Rosuvastatin 10 mg", "Rosuvastatin 20-40 mg"],
                     index=0
                 )
             with col2:
@@ -275,17 +344,23 @@ def main():
             ldl_effect = calculate_ldl_effect(baseline_risk, ldl, final_ldl)
             
             # Calculate BP effect
-            bp_rrr = min(0.15 * ((sbp - sbp_target)/10), 0.25)  # 15% per 10mmHg, max 25%
+            bp_rrr = min(0.15 * ((sbp - sbp_target)/10), 0.25)
             bp_effect = baseline_risk * (1 - bp_rrr)
             
             # Get active interventions
             active_interventions = []
             if med_diet:
-                active_interventions.append(next(iv for iv in INTERVENTIONS if iv["name"] == "Mediterranean diet"))
+                diet_iv = get_intervention("Mediterranean diet")
+                if diet_iv:
+                    active_interventions.append(diet_iv)
             if exercise:
-                active_interventions.append(next(iv for iv in INTERVENTIONS if iv["name"] == "Exercise"))
+                exercise_iv = get_intervention("Exercise")
+                if exercise_iv:
+                    active_interventions.append(exercise_iv)
             if smoker and smoking_cessation:
-                active_interventions.append(next(iv for iv in INTERVENTIONS if iv["name"] == "Smoking cessation"))
+                smoking_iv = get_intervention("Smoking cessation")
+                if smoking_iv:
+                    active_interventions.append(smoking_iv)
             
             # Combined effect
             combined = calculate_combined_effect(baseline_risk, active_interventions, horizon)
@@ -351,6 +426,12 @@ def main():
             **LDL-C Reduction**  
             {EVIDENCE_DB['ldl']['effect']}  
             *{EVIDENCE_DB['ldl']['source']}* [PMID:{EVIDENCE_DB['ldl']['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{EVIDENCE_DB['ldl']['pmid']}/)
+            """)
+        with tab2:
+            st.markdown(f"""
+            **Blood Pressure Control**  
+            {EVIDENCE_DB['bp']['effect']}  
+            *{EVIDENCE_DB['bp']['source']}* [PMID:{EVIDENCE_DB['bp']['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{EVIDENCE_DB['bp']['pmid']}/)
             """)
     
     # Footer
