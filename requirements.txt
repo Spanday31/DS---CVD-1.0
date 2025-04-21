@@ -2,3 +2,6 @@ streamlit
 pandas
 plotly
 python-docx
+matplotlib
+fpdf
+pillow
