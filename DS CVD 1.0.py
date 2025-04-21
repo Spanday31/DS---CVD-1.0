@@ -7,7 +7,6 @@ from datetime import date
 # CONSTANTS & EVIDENCE BASE
 # ======================
 
-# Intervention data with evidence sources
 INTERVENTIONS = [
     {
         "name": "Smoking cessation",
@@ -23,14 +22,12 @@ INTERVENTIONS = [
         "mechanism": "Reduces platelet aggregation",
         "contraindications": ["Active bleeding", "Warfarin use"],
         "source": "CAPRIE Lancet 1996 (PMID: 8918275)"
-    },
-    # ... (other interventions with full details)
+    }
 ]
 
 LDL_THERAPIES = {
     "Atorvastatin 20 mg": {"reduction": 40, "source": "STELLAR JAMA 2003 (PMID: 14699082)"},
-    "Atorvastatin 80 mg": {"reduction": 50, "source": "TNT NEJM 2005 (PMID: 15930428)"},
-    # ... (other LDL therapies)
+    "Atorvastatin 80 mg": {"reduction": 50, "source": "TNT NEJM 2005 (PMID: 15930428)"}
 }
 
 EVIDENCE_DB = {
@@ -43,14 +40,14 @@ EVIDENCE_DB = {
         "effect": "10% RRR per 10 mmHg reduction",
         "source": "SPRINT NEJM 2015",
         "pmid": "26551272"
-    },
-    # ... (other evidence)
+    }
 }
 
 # ======================
 # CORE CALCULATIONS
 # ======================
 
+@st.cache_data
 def calculate_smart_risk(age, sex, sbp, total_chol, hdl, smoker, diabetes, egfr, crp, vasc_count):
     """Enhanced SMART Risk Score with input validation"""
     try:
@@ -65,29 +62,30 @@ def calculate_smart_risk(age, sex, sbp, total_chol, hdl, smoker, diabetes, egfr,
         
         risk10 = 1 - 0.900**math.exp(lp - 5.8)
         return max(1.0, min(99.0, round(risk10 * 100, 1)))
-    except:
+    except Exception as e:
+        st.error(f"Error calculating risk: {str(e)}")
         return None
 
 def calculate_ldl_effect(baseline_risk, baseline_ldl, final_ldl):
     """Based on CTT Collaboration meta-analysis"""
-    ldl_reduction = baseline_ldl - final_ldl
-    rrr = min(22 * ldl_reduction, 60)  # Cap at 60% RRR
-    return baseline_risk * (1 - rrr/100)
+    try:
+        ldl_reduction = baseline_ldl - final_ldl
+        rrr = min(22 * ldl_reduction, 60)  # Cap at 60% RRR
+        return baseline_risk * (1 - rrr/100)
+    except Exception as e:
+        st.error(f"Error calculating LDL effect: {str(e)}")
+        return baseline_risk
 
 def calculate_combined_effect(baseline_risk, active_interventions, horizon):
     """Diminishing returns model for multiple interventions"""
     try:
         total_rrr = 0
         
-        # Add intervention effects
         for iv in active_interventions:
             arr = iv[f"arr_{horizon}"]
             total_rrr += (arr / baseline_risk) if baseline_risk > 0 else 0
         
-        # Apply diminishing returns (1 - e^(-kx))
         effective_rrr = 1 - math.exp(-0.8 * total_rrr)
-        
-        # Cap at 75% RRR (clinical reality)
         final_rrr = min(0.75, effective_rrr)
         
         return {
@@ -95,20 +93,32 @@ def calculate_combined_effect(baseline_risk, active_interventions, horizon):
             "rrr": final_rrr * 100,
             "arr": baseline_risk - (baseline_risk * (1 - final_rrr))
         }
-    except:
+    except Exception as e:
+        st.error(f"Error calculating combined effect: {str(e)}")
         return None
 
 # ======================
 # STREAMLIT APP
 # ======================
 
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if 'calculated' not in st.session_state:
+        st.session_state.calculated = False
+    if 'patient_mode' not in st.session_state:
+        st.session_state.patient_mode = False
+    if 'final_risk' not in st.session_state:
+        st.session_state.final_risk = None
+
 def main():
-    # Page configuration
     st.set_page_config(
         page_title="PRIME CVD Risk Calculator",
         layout="wide",
         page_icon="❤️"
     )
+    
+    # Initialize session state
+    initialize_session_state()
     
     # Custom CSS
     st.markdown("""
@@ -130,10 +140,6 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Initialize session state
-    if 'calculated' not in st.session_state:
-        st.session_state.calculated = False
-    
     # ======================
     # SIDEBAR - INPUTS
     # ======================
@@ -141,35 +147,35 @@ def main():
         st.header("Patient Profile")
         
         # Demographics
-        age = st.slider("Age (years)", 30, 90, 65, key='age')
-        sex = st.radio("Sex", ["Male", "Female"], index=0, key='sex')
+        age = st.slider("Age (years)", 30, 90, 65)
+        sex = st.radio("Sex", ["Male", "Female"], index=0)
         
         # Risk Factors
-        diabetes = st.checkbox("Diabetes mellitus", key='diabetes')
-        smoker = st.checkbox("Current smoker", key='smoker')
+        diabetes = st.checkbox("Diabetes mellitus")
+        smoker = st.checkbox("Current smoker")
         
         # Vascular Disease
         st.subheader("Vascular Disease")
-        cad = st.checkbox("Coronary artery disease", key='cad')
-        stroke = st.checkbox("Prior stroke/TIA", key='stroke')
-        pad = st.checkbox("Peripheral artery disease", key='pad')
+        cad = st.checkbox("Coronary artery disease")
+        stroke = st.checkbox("Prior stroke/TIA")
+        pad = st.checkbox("Peripheral artery disease")
         vasc_count = sum([cad, stroke, pad])
         
         # Biomarkers
         st.subheader("Biomarkers")
-        total_chol = st.number_input("Total Cholesterol (mmol/L)", 2.0, 10.0, 5.0, 0.1, key='total_chol')
-        hdl = st.number_input("HDL-C (mmol/L)", 0.5, 3.0, 1.0, 0.1, key='hdl')
-        ldl = st.number_input("LDL-C (mmol/L)", 0.5, 6.0, 3.5, 0.1, key='ldl')
-        sbp = st.number_input("SBP (mmHg)", 90, 220, 140, key='sbp')
-        hba1c = st.number_input("HbA1c (%)", 5.0, 12.0, 7.0, 0.1, key='hba1c') if diabetes else 5.0
-        egfr = st.slider("eGFR (mL/min/1.73m²)", 15, 120, 80, key='egfr')
-        crp = st.number_input("hs-CRP (mg/L)", 0.1, 20.0, 2.0, 0.1, key='crp')
+        total_chol = st.number_input("Total Cholesterol (mmol/L)", 2.0, 10.0, 5.0, 0.1)
+        hdl = st.number_input("HDL-C (mmol/L)", 0.5, 3.0, 1.0, 0.1)
+        ldl = st.number_input("LDL-C (mmol/L)", 0.5, 6.0, 3.5, 0.1)
+        sbp = st.number_input("SBP (mmHg)", 90, 220, 140)
+        hba1c = st.number_input("HbA1c (%)", 5.0, 12.0, 7.0, 0.1) if diabetes else 5.0
+        egfr = st.slider("eGFR (mL/min/1.73m²)", 15, 120, 80)
+        crp = st.number_input("hs-CRP (mg/L)", 0.1, 20.0, 2.0, 0.1)
         
         # Time Horizon
-        horizon = st.radio("Time Horizon", ["5yr", "10yr", "lifetime"], index=1, key='horizon')
+        horizon = st.radio("Time Horizon", ["5yr", "10yr", "lifetime"], index=1)
         
         # View Mode
-        patient_mode = st.checkbox("Patient-friendly view", key='patient_mode')
+        st.session_state.patient_mode = st.checkbox("Patient-friendly view")
     
     # ======================
     # MAIN CONTENT
@@ -177,12 +183,11 @@ def main():
     tab1, tab2 = st.tabs(["Risk Assessment", "Treatment Optimization"])
     
     with tab1:
-        # Calculate baseline risk
         baseline_risk = calculate_smart_risk(
             age, sex, sbp, total_chol, hdl, smoker, diabetes, egfr, crp, vasc_count
         )
         
-        if baseline_risk:
+        if baseline_risk is not None:
             # Apply time horizon
             if horizon == "5yr":
                 baseline_risk = baseline_risk * 0.6  # Simplified conversion
@@ -223,7 +228,7 @@ def main():
     with tab2:
         st.header("Optimize Treatment Plan")
         
-        if not baseline_risk:
+        if baseline_risk is None:
             st.warning("Complete Risk Assessment first")
             st.stop()
         
@@ -234,28 +239,26 @@ def main():
                 statin = st.selectbox(
                     "Statin Intensity",
                     ["None", "Atorvastatin 20 mg", "Atorvastatin 80 mg", "Rosuvastatin 10 mg", "Rosuvastatin 20-40 mg"],
-                    index=0,
-                    key='statin'
+                    index=0
                 )
             with col2:
                 add_on = st.multiselect(
                     "Add-on Therapies",
-                    ["Ezetimibe", "PCSK9 inhibitor", "Bempedoic acid"],
-                    key='add_on'
+                    ["Ezetimibe", "PCSK9 inhibitor", "Bempedoic acid"]
                 )
         
         # Blood Pressure
         with st.expander("🩸 Blood Pressure Control"):
-            sbp_target = st.slider("Target SBP (mmHg)", 110, 150, 130, key='sbp_target')
+            sbp_target = st.slider("Target SBP (mmHg)", 110, 150, 130)
             st.markdown(f"*Current: {sbp} mmHg → Target: {sbp_target} mmHg*")
         
         # Lifestyle Interventions
         with st.expander("🏃 Lifestyle Modifications"):
-            st.checkbox("Mediterranean diet", key='med_diet')
-            st.checkbox("Regular exercise (≥150 min/week)", key='exercise')
+            med_diet = st.checkbox("Mediterranean diet")
+            exercise = st.checkbox("Regular exercise (≥150 min/week)")
             if smoker:
-                st.checkbox("Smoking cessation program", key='smoking_cessation')
-            st.checkbox("Alcohol moderation (<14 units/week)", key='alcohol')
+                smoking_cessation = st.checkbox("Smoking cessation program")
+            alcohol = st.checkbox("Alcohol moderation (<14 units/week)")
         
         # Calculate button
         if st.button("Calculate Treatment Impact", type="primary"):
@@ -277,9 +280,12 @@ def main():
             
             # Get active interventions
             active_interventions = []
-            if st.session_state.med_diet:
+            if med_diet:
                 active_interventions.append(next(iv for iv in INTERVENTIONS if iv["name"] == "Mediterranean diet"))
-            # ... (add other interventions)
+            if exercise:
+                active_interventions.append(next(iv for iv in INTERVENTIONS if iv["name"] == "Exercise"))
+            if smoker and smoking_cessation:
+                active_interventions.append(next(iv for iv in INTERVENTIONS if iv["name"] == "Smoking cessation"))
             
             # Combined effect
             combined = calculate_combined_effect(baseline_risk, active_interventions, horizon)
@@ -289,7 +295,7 @@ def main():
                 st.session_state.calculated = True
     
     # Display results if calculated
-    if st.session_state.get('calculated'):
+    if st.session_state.get('calculated') and st.session_state.final_risk is not None:
         final_risk = st.session_state.final_risk
         arr = baseline_risk - final_risk
         rrr = (arr / baseline_risk) * 100 if baseline_risk > 0 else 0
@@ -346,7 +352,6 @@ def main():
             {EVIDENCE_DB['ldl']['effect']}  
             *{EVIDENCE_DB['ldl']['source']}* [PMID:{EVIDENCE_DB['ldl']['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{EVIDENCE_DB['ldl']['pmid']}/)
             """)
-        # ... other tabs
     
     # Footer
     st.markdown(f"""
