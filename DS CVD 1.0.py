@@ -1,7 +1,14 @@
 import streamlit as st
 import math
 import pandas as pd
-from datetime import date
+import matplotlib.pyplot as plt
+from datetime import datetime, date
+from fpdf import FPDF
+import base64
+import json
+from io import BytesIO
+from PIL import Image
+import os
 
 # ======================
 # CONSTANTS & EVIDENCE BASE
@@ -16,26 +23,11 @@ INTERVENTIONS = [
         "source": "Haberstick BMJ 2018 (PMID: 29367388)"
     },
     {
-        "name": "Antiplatelet (ASA or clopidogrel)",
-        "arr_5yr": 2,
-        "arr_lifetime": 6,
-        "mechanism": "Reduces platelet aggregation",
-        "contraindications": ["Active bleeding", "Warfarin use"],
-        "source": "CAPRIE Lancet 1996 (PMID: 8918275)"
-    },
-    {
         "name": "Mediterranean diet",
         "arr_5yr": 3,
         "arr_lifetime": 10,
         "mechanism": "Improves lipid profile and reduces inflammation",
         "source": "PREDIMED NEJM 2018 (PMID: 29897866)"
-    },
-    {
-        "name": "Exercise",
-        "arr_5yr": 4,
-        "arr_lifetime": 12,
-        "mechanism": "Improves cardiovascular fitness and metabolic health",
-        "source": "HUNT Study, Br J Sports Med 2019 (PMID: 30782506)"
     }
 ]
 
@@ -43,7 +35,7 @@ LDL_THERAPIES = {
     "Atorvastatin 20 mg": {"reduction": 40, "source": "STELLAR JAMA 2003 (PMID: 14699082)"},
     "Atorvastatin 80 mg": {"reduction": 50, "source": "TNT NEJM 2005 (PMID: 15930428)"},
     "Rosuvastatin 10 mg": {"reduction": 45, "source": "JUPITER NEJM 2008 (PMID: 18997196)"},
-    "Rosuvastatin 20-40 mg": {"reduction": 55, "source": "SATURN NEJM 2011 (PMID: 22010916)"}
+    "Rosuvastatin 20 mg": {"reduction": 55, "source": "SATURN NEJM 2011 (PMID: 22010916)"}
 }
 
 EVIDENCE_DB = {
@@ -92,165 +84,364 @@ def calculate_ldl_effect(baseline_risk, baseline_ldl, final_ldl):
         st.error(f"Error calculating LDL effect: {str(e)}")
         return baseline_risk
 
-def get_intervention(name):
-    """Safe intervention lookup with error handling"""
-    try:
-        return next(iv for iv in INTERVENTIONS if iv["name"] == name)
-    except StopIteration:
-        st.warning(f"Intervention '{name}' not found in database")
-        return None
+def validate_drug_classes(selected_therapies):
+    """Ensure only one drug per class is selected"""
+    drug_classes = {
+        'statins': ['atorvastatin', 'rosuvastatin'],
+        'pcsk9': ['pcsk9', 'evlocumab', 'alirocumab'],
+        'ezetimibe': ['ezetimibe'],
+        'inclisiran': ['inclisiran']
+    }
+    
+    conflicts = []
+    for class_name, drugs in drug_classes.items():
+        class_drugs = [d for d in selected_therapies if any(drug in d.lower() for drug in drugs)]
+        if len(class_drugs) > 1:
+            conflicts.append(f"Multiple {class_name}: {', '.join(class_drugs)}")
+    
+    return conflicts
 
-def calculate_combined_effect(baseline_risk, active_interventions, horizon):
-    """Diminishing returns model for multiple interventions"""
-    try:
-        total_rrr = 0
+def calculate_ldl_reduction(current_ldl, pre_statin, discharge_statin, discharge_add_ons):
+    """Calculate LDL reduction accounting for prior statin use"""
+    statin_reduction = LDL_THERAPIES.get(discharge_statin, {}).get("reduction", 0)
+    
+    # Adjustment for prior statin use (diminished additional effect)
+    if pre_statin != "None":
+        statin_reduction *= 0.5  # 50% reduced effect if already on statin
+    
+    total_reduction = statin_reduction
+    
+    # Add-on therapies (full effect)
+    if "Ezetimibe" in discharge_add_ons:
+        total_reduction += 20
+    if "PCSK9 inhibitor" in discharge_add_ons:
+        total_reduction += 60
+    if "Inclisiran" in discharge_add_ons:
+        total_reduction += 50
+    
+    projected_ldl = current_ldl * (1 - total_reduction/100)
+    return projected_ldl, total_reduction
+
+def generate_recommendations(final_risk):
+    """Generate evidence-based recommendations"""
+    if final_risk >= 30:
+        return """
+        🔴 Very High Risk Management:
+        - High-intensity statin (atorvastatin 80mg or rosuvastatin 20-40mg)
+        - Consider PCSK9 inhibitor if LDL ≥1.8 mmol/L after statin
+        - Target SBP <130 mmHg if tolerated
+        - Comprehensive lifestyle modification
+        - Consider colchicine 0.5mg daily for inflammation
+        """
+    elif final_risk >= 20:
+        return """
+        🟠 High Risk Management:
+        - At least moderate-intensity statin
+        - Target SBP <130 mmHg
+        - Address all modifiable risk factors
+        - Consider ezetimibe if LDL >1.8 mmol/L
+        """
+    else:
+        return """
+        🟢 Moderate Risk Management:
+        - Maintain current therapies
+        - Focus on lifestyle adherence
+        - Annual risk reassessment
+        """
+
+# ======================
+# PDF REPORT GENERATION
+# ======================
+
+class PDFReport(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 12)
+        self.cell(0, 10, 'PRIME CVD Risk Assessment Report', 0, 1, 'C')
+        self.ln(5)
+    
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+def create_pdf_report(patient_data, risk_data, ldl_history):
+    pdf = PDFReport()
+    pdf.add_page()
+    
+    # Header
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, 'PRIME CVD Risk Assessment', 0, 1, 'C')
+    pdf.ln(10)
+    
+    # Patient Information
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, 'Patient Information', 0, 1)
+    pdf.set_font('Arial', '', 12)
+    pdf.cell(0, 10, f"Name: {patient_data.get('name', 'N/A')}", 0, 1)
+    pdf.cell(0, 10, f"Age: {patient_data.get('age', 'N/A')} | Sex: {patient_data.get('sex', 'N/A')}", 0, 1)
+    pdf.cell(0, 10, f"Assessment Date: {datetime.now().strftime('%Y-%m-%d')}", 0, 1)
+    pdf.ln(5)
+    
+    # Risk Assessment
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, 'Risk Assessment Summary', 0, 1)
+    pdf.set_font('Arial', '', 12)
+    
+    col_widths = [60, 60, 60]
+    pdf.cell(col_widths[0], 10, "Metric", border=1)
+    pdf.cell(col_widths[1], 10, "Value", border=1)
+    pdf.cell(col_widths[2], 10, "Target", border=1)
+    pdf.ln()
+    
+    risk_data_rows = [
+        ("Baseline Risk", f"{risk_data['baseline_risk']}%", "-"),
+        ("Post-Treatment Risk", f"{risk_data['final_risk']}%", "-"),
+        ("LDL-C", f"{risk_data['current_ldl']} mmol/L", f"< {risk_data['ldl_target']} mmol/L")
+    ]
+    
+    for row in risk_data_rows:
+        pdf.cell(col_widths[0], 10, row[0], border=1)
+        pdf.cell(col_widths[1], 10, row[1], border=1)
+        pdf.cell(col_widths[2], 10, row[2], border=1)
+        pdf.ln()
+    
+    # LDL Trend Plot
+    pdf.ln(10)
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, 'LDL-C Trend', 0, 1)
+    
+    buf = BytesIO()
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(ldl_history['dates'], ldl_history['values'], 
+            marker='o', color='#4e8cff', linewidth=2)
+    ax.set_title('LDL-C Reduction Over Time', pad=10)
+    ax.set_ylabel('LDL-C (mmol/L)')
+    ax.grid(True, linestyle='--', alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(buf, format='png', dpi=120)
+    plt.close()
+    
+    pdf.image(buf, x=10, w=190)
+    
+    # Recommendations
+    pdf.ln(10)
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, 'Clinical Recommendations', 0, 1)
+    pdf.set_font('Arial', '', 12)
+    
+    recommendations = risk_data['recommendations'].split('\n')
+    for rec in recommendations:
+        if rec.strip().startswith("🔴"):
+            pdf.set_text_color(220, 50, 50)  # Red
+        elif rec.strip().startswith("🟠"):
+            pdf.set_text_color(210, 140, 0)  # Orange
+        elif rec.strip().startswith("🟢"):
+            pdf.set_text_color(50, 150, 50)  # Green
         
-        for iv in active_interventions:
-            arr = iv[f"arr_{horizon}"]
-            total_rrr += (arr / baseline_risk) if baseline_risk > 0 else 0
-        
-        effective_rrr = 1 - math.exp(-0.8 * total_rrr)
-        final_rrr = min(0.75, effective_rrr)
-        
-        return {
-            "projected_risk": baseline_risk * (1 - final_rrr),
-            "rrr": final_rrr * 100,
-            "arr": baseline_risk - (baseline_risk * (1 - final_rrr))
-        }
-    except Exception as e:
-        st.error(f"Error calculating combined effect: {str(e)}")
-        return None
+        pdf.multi_cell(0, 8, rec.strip())
+        pdf.set_text_color(0, 0, 0)  # Reset to black
+    
+    return pdf.output(dest='S').encode('latin1')
 
 # ======================
 # STREAMLIT APP
 # ======================
 
-def initialize_session_state():
-    """Initialize all session state variables"""
-    if 'calculated' not in st.session_state:
-        st.session_state.calculated = False
-    if 'patient_mode' not in st.session_state:
-        st.session_state.patient_mode = False
-    if 'final_risk' not in st.session_state:
-        st.session_state.final_risk = None
-
 def main():
     st.set_page_config(
         page_title="PRIME CVD Risk Calculator",
         layout="wide",
-        page_icon="❤️"
+        page_icon="❤️",
+        initial_sidebar_state="expanded"
     )
     
-    # Custom CSS for visibility
+    # ============ CUSTOM CSS ============
     st.markdown("""
     <style>
-        h1, h2, h3, h4, h5, h6 {
-            color: #333333 !important;
+        /* Modern professional styling */
+        .main { background-color: #f8fafc; }
+        .sidebar .sidebar-content { 
+            background: white; 
+            box-shadow: 1px 0 5px rgba(0,0,0,0.1);
         }
+        
+        /* Cards */
+        .card {
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            background: white;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+        
+        /* Risk boxes */
         .risk-high { 
-            border-left: 4px solid #d9534f; 
-            padding: 1rem; 
-            background-color: #fdf7f7; 
-            margin: 1rem 0; 
-            color: #333333;
+            border-left: 5px solid #ef4444; 
+            background-color: #fef2f2; 
         }
         .risk-medium { 
-            border-left: 4px solid #f0ad4e; 
-            padding: 1rem; 
-            background-color: #fffbf5; 
-            margin: 1rem 0; 
-            color: #333333;
+            border-left: 5px solid #f59e0b; 
+            background-color: #fffbeb; 
         }
         .risk-low { 
-            border-left: 4px solid #5cb85c; 
-            padding: 1rem; 
-            background-color: #f8fdf8; 
-            margin: 1rem 0; 
-            color: #333333;
+            border-left: 5px solid #10b981; 
+            background-color: #ecfdf5; 
         }
-        .therapy-card { 
-            border-radius: 10px; 
-            padding: 1.5rem; 
-            margin-bottom: 1.5rem; 
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            background-color: #ffffff;
+        
+        /* Buttons */
+        .stButton>button {
+            background-color: #3b82f6;
+            color: white;
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            font-weight: 500;
+            transition: all 0.2s;
         }
-        .header-box { 
-            background-color: #f0f2f6; 
-            padding: 1.5rem; 
-            border-radius: 10px; 
-            margin-bottom: 2rem; 
+        .stButton>button:hover {
+            background-color: #2563eb;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .footer { 
-            font-size: 0.8rem; 
-            color: #555555 !important; 
-            margin-top: 2rem; 
-            border-top: 1px solid #eee; 
-            padding-top: 1rem; 
+        
+        /* Tooltips */
+        .stTooltip {
+            background-color: #333 !important;
+            color: white !important;
+            padding: 0.5rem !important;
+            border-radius: 4px !important;
         }
-        body {
-            color: #333333 !important;
+        
+        /* Tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.5rem;
         }
-        .sidebar .sidebar-content {
-            background-color: #f8f9fa;
+        .stTabs [data-baseweb="tab"] {
+            padding: 0.5rem 1rem;
+            border-radius: 8px 8px 0 0;
         }
-        .streamlit-expanderHeader {
-            color: #333333 !important;
-            font-weight: 600 !important;
+        .stTabs [aria-selected="true"] {
+            background-color: #3b82f6;
+            color: white;
         }
     </style>
     """, unsafe_allow_html=True)
     
-    # Initialize session state
-    initialize_session_state()
+    # ============ SESSION STATE ============
+    if 'patient_mode' not in st.session_state:
+        st.session_state.patient_mode = False
+    if 'calculated' not in st.session_state:
+        st.session_state.calculated = False
+    if 'final_risk' not in st.session_state:
+        st.session_state.final_risk = None
+    if 'ldl_results' not in st.session_state:
+        st.session_state.ldl_results = None
     
-    # Header
-    st.markdown("""
-    <div class="header-box">
-        <h1 style="margin:0;color:#333333;">PRIME SMART-2 CVD Risk Calculator</h1>
-        <p style="margin:0;color:#555555;">Secondary Prevention After Myocardial Infarction</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # ============ HEADER ============
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.markdown("""
+        <div class='card' style='background:linear-gradient(135deg,#3b82f6,#2563eb);color:white;'>
+            <h1 style='color:white;margin:0;'>PRIME CVD Risk Calculator</h1>
+            <p style='color:#e0f2fe;margin:0;'>Secondary Prevention After Myocardial Infarction</p>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Sidebar - Inputs
+    with col2:
+        try:
+            logo = Image.open("logo.png")
+            st.image(logo, width=100)
+        except:
+            st.warning("Logo image not found")
+    
+    # ============ SIDEBAR ============
     with st.sidebar:
-        st.header("Patient Profile")
+        # Patient Mode Toggle
+        st.session_state.patient_mode = st.toggle("Patient-Friendly View", 
+                                                help="Simplified interface for patient education")
         
-        # Demographics
-        age = st.slider("Age (years)", 30, 90, 65)
-        sex = st.radio("Sex", ["Male", "Female"], index=0)
+        # Patient Demographics
+        st.markdown("## Patient Demographics")
+        age = st.number_input("Age (years)", min_value=30, max_value=100, value=65)
+        sex = st.radio("Sex", ["Male", "Female"], horizontal=True)
         
         # Risk Factors
+        st.markdown("## Risk Factors")
         diabetes = st.checkbox("Diabetes mellitus")
         smoker = st.checkbox("Current smoker")
         
         # Vascular Disease
-        st.subheader("Vascular Disease")
-        cad = st.checkbox("Coronary artery disease")
-        stroke = st.checkbox("Prior stroke/TIA")
-        pad = st.checkbox("Peripheral artery disease")
-        vasc_count = sum([cad, stroke, pad])
+        with st.expander("Territories of Known Vascular Disease"):
+            cad = st.checkbox("Coronary artery disease (CAD)")
+            stroke = st.checkbox("Cerebrovascular disease (Stroke/TIA)")
+            pad = st.checkbox("Peripheral artery disease (PAD)")
+            vasc_count = sum([cad, stroke, pad])
         
         # Biomarkers
-        st.subheader("Biomarkers")
-        total_chol = st.number_input("Total Cholesterol (mmol/L)", 2.0, 10.0, 5.0, 0.1)
-        hdl = st.number_input("HDL-C (mmol/L)", 0.5, 3.0, 1.0, 0.1)
-        ldl = st.number_input("LDL-C (mmol/L)", 0.5, 6.0, 3.5, 0.1)
-        sbp = st.number_input("SBP (mmHg)", 90, 220, 140)
-        hba1c = st.number_input("HbA1c (%)", 5.0, 12.0, 7.0, 0.1) if diabetes else 5.0
-        egfr = st.slider("eGFR (mL/min/1.73m²)", 15, 120, 80)
-        crp = st.number_input("hs-CRP (mg/L)", 0.1, 20.0, 2.0, 0.1)
+        with st.expander("Biomarkers"):
+            total_chol = st.number_input("Total Cholesterol (mmol/L)", 
+                                       min_value=2.0, max_value=10.0, value=5.0, step=0.1)
+            hdl = st.number_input("HDL-C (mmol/L)", 
+                                 min_value=0.5, max_value=3.0, value=1.0, step=0.1)
+            ldl = st.number_input("LDL-C (mmol/L)", 
+                                 min_value=0.5, max_value=6.0, value=3.5, step=0.1)
+            sbp = st.number_input("SBP (mmHg)", 
+                                 min_value=90, max_value=220, value=140)
+            if diabetes:
+                hba1c = st.number_input("HbA1c (%)", 
+                                       min_value=5.0, max_value=12.0, value=7.0, step=0.1)
+            egfr = st.slider("eGFR (mL/min/1.73m²)", 
+                             min_value=15, max_value=120, value=80)
+            crp = st.number_input("hs-CRP (mg/L) - baseline level", 
+                                 min_value=0.1, max_value=20.0, value=2.0, step=0.1,
+                                 help="Use baseline value (not during acute illness)")
         
         # Time Horizon
+        st.markdown("---")
         horizon = st.radio("Time Horizon", ["5yr", "10yr", "lifetime"], index=1)
         
-        # View Mode
-        st.session_state.patient_mode = st.checkbox("Patient-friendly view")
+        # Save/Load
+        with st.expander("Save/Load Case"):
+            case_name = st.text_input("Case Name", placeholder="Patient ID or name")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("💾 Save Current Case"):
+                    case_data = {
+                        'demographics': {'age': age, 'sex': sex},
+                        'risk_factors': {
+                            'diabetes': diabetes, 
+                            'smoker': smoker,
+                            'vasc_count': vasc_count
+                        },
+                        'biomarkers': {
+                            'ldl': ldl, 
+                            'sbp': sbp,
+                            'hdl': hdl,
+                            'total_chol': total_chol,
+                            'crp': crp
+                        },
+                        'timestamp': str(datetime.now())
+                    }
+                    with open(f"{case_name}.json", "w") as f:
+                        json.dump(case_data, f)
+                    st.success("Case saved successfully!")
+            with col2:
+                uploaded_file = st.file_uploader("📂 Load Case", type="json")
+                if uploaded_file:
+                    try:
+                        case_data = json.load(uploaded_file)
+                        st.session_state.age = case_data['demographics']['age']
+                        st.session_state.sex = case_data['demographics']['sex']
+                        st.session_state.diabetes = case_data['risk_factors']['diabetes']
+                        st.session_state.smoker = case_data['risk_factors']['smoker']
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error loading case: {str(e)}")
     
-    # Main Content
-    tab1, tab2 = st.tabs(["Risk Assessment", "Treatment Optimization"])
+    # ============ MAIN CONTENT ============
+    tab1, tab2 = st.tabs(["📊 Risk Assessment", "💊 Treatment Optimization"])
     
     with tab1:
+        # Calculate baseline risk
         baseline_risk = calculate_smart_risk(
             age, sex, sbp, total_chol, hdl, smoker, diabetes, egfr, crp, vasc_count
         )
@@ -264,17 +455,17 @@ def main():
             
             baseline_risk = round(baseline_risk, 1)
             
-            # Display baseline risk
+            # Display risk
             risk_category = "high" if baseline_risk >= 20 else "medium" if baseline_risk >= 10 else "low"
             st.markdown(f"""
-            <div class="risk-{risk_category}">
+            <div class='card risk-{risk_category}'>
                 <h3>Baseline {horizon} Risk: {baseline_risk}%</h3>
                 <p>Estimated probability of recurrent cardiovascular events</p>
             </div>
             """, unsafe_allow_html=True)
             
-            # Risk factor summary
-            with st.expander("Key Risk Factors"):
+            # Risk factors
+            with st.expander("🔍 Key Risk Factors"):
                 factors = [
                     f"Age: {age}",
                     f"Sex: {sex}",
@@ -283,7 +474,7 @@ def main():
                     f"HDL-C: {hdl} mmol/L"
                 ]
                 if diabetes:
-                    factors.append(f"Diabetes (HbA1c: {hba1c}%)")
+                    factors.append(f"Diabetes (HbA1c: {hba1c if 'hba1c' in locals() else 'N/A'}%)")
                 if smoker:
                     factors.append("Current smoker")
                 if vasc_count > 0:
@@ -294,152 +485,185 @@ def main():
             st.warning("Please complete all patient information")
     
     with tab2:
-        st.header("Optimize Treatment Plan")
+        st.header("Optimize Treatment Plan", divider='blue')
         
         if baseline_risk is None:
             st.warning("Complete Risk Assessment first")
             st.stop()
         
-        # Lipid Management
-        with st.expander("💊 Lipid-Lowering Therapy", expanded=True):
+        # Current Therapy
+        with st.expander("📋 Current Lipid Therapy", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
-                statin = st.selectbox(
-                    "Statin Intensity",
-                    ["None", "Atorvastatin 20 mg", "Atorvastatin 80 mg", 
-                     "Rosuvastatin 10 mg", "Rosuvastatin 20-40 mg"],
-                    index=0
+                current_statin = st.selectbox(
+                    "Current Statin",
+                    ["None"] + list(LDL_THERAPIES.keys()),
+                    index=0,
+                    help="Patient's pre-admission statin regimen"
                 )
             with col2:
-                add_on = st.multiselect(
-                    "Add-on Therapies",
-                    ["Ezetimibe", "PCSK9 inhibitor", "Bempedoic acid"]
+                current_add_ons = st.multiselect(
+                    "Current Add-ons",
+                    ["Ezetimibe", "PCSK9 inhibitor", "Bempedoic acid"],
+                    help="Other lipid-lowering medications"
                 )
         
-        # Blood Pressure
-        with st.expander("🩸 Blood Pressure Control"):
-            sbp_target = st.slider("Target SBP (mmHg)", 110, 150, 130)
-            st.markdown(f"*Current: {sbp} mmHg → Target: {sbp_target} mmHg*")
-        
-        # Lifestyle Interventions
-        with st.expander("🏃 Lifestyle Modifications"):
-            med_diet = st.checkbox("Mediterranean diet")
-            exercise = st.checkbox("Regular exercise (≥150 min/week)")
-            if smoker:
-                smoking_cessation = st.checkbox("Smoking cessation program")
-            alcohol = st.checkbox("Alcohol moderation (<14 units/week)")
-        
-        # Calculate button
-        if st.button("Calculate Treatment Impact", type="primary"):
-            # Calculate LDL effect
-            ldl_reduction = 0
-            if statin != "None":
-                ldl_reduction += LDL_THERAPIES[statin]["reduction"]
-            if "Ezetimibe" in add_on:
-                ldl_reduction += 20
-            if "PCSK9 inhibitor" in add_on:
-                ldl_reduction += 60
+        # Recommended Therapy
+        with st.expander("💊 Recommended Discharge Therapy", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                discharge_statin = st.selectbox(
+                    "Recommended Statin",
+                    ["None"] + list(LDL_THERAPIES.keys()),
+                    index=2,  # Default to moderate intensity
+                    help="High-intensity statin recommended for secondary prevention"
+                )
+            with col2:
+                discharge_add_ons = st.multiselect(
+                    "Recommended Add-ons",
+                    ["Ezetimibe", "PCSK9 inhibitor", "Inclisiran", "Bempedoic acid"],
+                    help="Consider if LDL >1.4 mmol/L on maximally tolerated statin"
+                )
             
-            final_ldl = ldl * (1 - ldl_reduction/100)
-            ldl_effect = calculate_ldl_effect(baseline_risk, ldl, final_ldl)
+            target_ldl = st.slider("LDL-C Target (mmol/L)", 
+                                  min_value=0.5, max_value=3.0, value=1.4, step=0.1,
+                                  help="ESC 2021 Guidelines recommend <1.4 mmol/L for very high risk")
             
-            # Calculate BP effect
-            bp_rrr = min(0.15 * ((sbp - sbp_target)/10), 0.25)
-            bp_effect = baseline_risk * (1 - bp_rrr)
+            # Validate drug classes
+            conflicts = validate_drug_classes([discharge_statin] + discharge_add_ons)
+            if conflicts:
+                for conflict in conflicts:
+                    st.error(conflict)
             
-            # Get active interventions
-            active_interventions = []
-            if med_diet:
-                diet_iv = get_intervention("Mediterranean diet")
-                if diet_iv:
-                    active_interventions.append(diet_iv)
-            if exercise:
-                exercise_iv = get_intervention("Exercise")
-                if exercise_iv:
-                    active_interventions.append(exercise_iv)
-            if smoker and smoking_cessation:
-                smoking_iv = get_intervention("Smoking cessation")
-                if smoking_iv:
-                    active_interventions.append(smoking_iv)
-            
-            # Combined effect
-            combined = calculate_combined_effect(baseline_risk, active_interventions, horizon)
-            
-            if combined:
-                st.session_state.final_risk = min(ldl_effect, bp_effect, combined["projected_risk"])
-                st.session_state.calculated = True
-    
-    # Display results if calculated
-    if st.session_state.get('calculated') and st.session_state.final_risk is not None:
-        final_risk = st.session_state.final_risk
-        arr = baseline_risk - final_risk
-        rrr = (arr / baseline_risk) * 100 if baseline_risk > 0 else 0
+            if st.button("Calculate Treatment Impact", type="primary"):
+                try:
+                    # Calculate LDL effect
+                    projected_ldl, total_reduction = calculate_ldl_reduction(
+                        ldl, current_statin, discharge_statin, discharge_add_ons
+                    )
+                    
+                    # Calculate risk reduction
+                    ldl_effect = calculate_ldl_effect(baseline_risk, ldl, projected_ldl)
+                    
+                    # Get active interventions
+                    active_interventions = []
+                    if "Ezetimibe" in discharge_add_ons:
+                        active_interventions.append({"arr_5yr": 2, "arr_lifetime": 6})
+                    if "PCSK9 inhibitor" in discharge_add_ons:
+                        active_interventions.append({"arr_5yr": 3, "arr_lifetime": 8})
+                    
+                    # Combined effect
+                    total_arr = sum(iv["arr_5yr"] for iv in active_interventions)
+                    final_risk = max(1, baseline_risk - total_arr)
+                    
+                    st.session_state.final_risk = final_risk
+                    st.session_state.calculated = True
+                    st.session_state.ldl_results = {
+                        'current': ldl,
+                        'projected': projected_ldl,
+                        'reduction': total_reduction,
+                        'target': target_ldl
+                    }
+                    st.session_state.recommendations = generate_recommendations(final_risk)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Calculation error: {str(e)}")
         
-        risk_category = "high" if final_risk >= 20 else "medium" if final_risk >= 10 else "low"
-        st.markdown(f"""
-        <div class="risk-{risk_category}">
-            <h3>Post-Intervention {horizon} Risk: {final_risk:.1f}%</h3>
-            <p>Absolute Reduction: {arr:.1f} percentage points | Relative Reduction: {rrr:.1f}%</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Visual comparison
-        risk_data = pd.DataFrame({
-            "Scenario": ["Baseline", "With Interventions"],
-            "Risk (%)": [baseline_risk, final_risk],
-            "Color": ["#d9534f", "#5cb85c"]
-        })
-        st.bar_chart(risk_data.set_index("Scenario"), color="Color", height=400)
-        
-        # Clinical recommendations
-        st.subheader("Clinical Recommendations")
-        if final_risk >= 30:
-            st.error("""
-            **🔴 Very High Risk Management:**
-            - High-intensity statin (atorvastatin 80mg or rosuvastatin 20-40mg)
-            - Consider PCSK9 inhibitor if LDL ≥1.8 mmol/L after statin
-            - Target SBP <130 mmHg if tolerated
-            - Comprehensive lifestyle modification
-            - Consider colchicine 0.5mg daily for inflammation
-            """)
-        elif final_risk >= 20:
-            st.warning("""
-            **🟠 High Risk Management:**
-            - At least moderate-intensity statin
-            - Target SBP <130 mmHg
-            - Address all modifiable risk factors
-            - Consider ezetimibe if LDL >1.8 mmol/L
-            """)
-        else:
-            st.success("""
-            **🟢 Moderate Risk Management:**
-            - Maintain current therapies
-            - Focus on lifestyle adherence
-            - Annual risk reassessment
-            """)
-    
-    # Evidence Base
-    with st.expander("📚 Clinical Evidence Base"):
-        tab1, tab2, tab3 = st.tabs(["Lipid Management", "BP Control", "Lifestyle"])
-        with tab1:
+        # Results Display
+        if st.session_state.get('calculated'):
+            final_risk = st.session_state.final_risk
+            ldl_results = st.session_state.ldl_results
+            
+            # Risk reduction card
+            risk_category = "high" if final_risk >= 20 else "medium" if final_risk >= 10 else "low"
             st.markdown(f"""
-            **LDL-C Reduction**  
-            {EVIDENCE_DB['ldl']['effect']}  
-            *{EVIDENCE_DB['ldl']['source']}* [PMID:{EVIDENCE_DB['ldl']['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{EVIDENCE_DB['ldl']['pmid']}/)
-            """)
-        with tab2:
-            st.markdown(f"""
-            **Blood Pressure Control**  
-            {EVIDENCE_DB['bp']['effect']}  
-            *{EVIDENCE_DB['bp']['source']}* [PMID:{EVIDENCE_DB['bp']['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{EVIDENCE_DB['bp']['pmid']}/)
-            """)
-    
-    # Footer
-    st.markdown(f"""
-    <div class="footer">
-        PRIME Cardiology • King's College Hospital, London • {date.today().strftime('%d/%m/%Y')} • v2.1
-    </div>
-    """, unsafe_allow_html=True)
+            <div class='card risk-{risk_category}'>
+                <h3>Post-Intervention {horizon} Risk: {final_risk:.1f}%</h3>
+                <p>Absolute reduction: {baseline_risk-final_risk:.1f} percentage points</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # LDL results
+            with st.expander("📈 Lipid Therapy Impact"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Current LDL-C", f"{ldl_results['current']:.1f} mmol/L")
+                with col2:
+                    st.metric("Projected LDL-C", f"{ldl_results['projected']:.1f} mmol/L",
+                             delta=f"{ldl_results['reduction']:.0f}% reduction")
+                with col3:
+                    st.metric("Target LDL-C", f"{ldl_results['target']:.1f} mmol/L")
+                
+                # LDL trend visualization
+                st.markdown("**LDL-C Projection**")
+                fig, ax = plt.subplots()
+                ax.bar(["Current", "Projected"], 
+                      [ldl_results['current'], ldl_results['projected']],
+                      color=["#3b82f6", "#10b981"])
+                ax.axhline(y=ldl_results['target'], color='#ef4444', linestyle='--', label='Target')
+                ax.set_ylabel("LDL-C (mmol/L)")
+                ax.legend()
+                st.pyplot(fig)
+            
+            # Clinical recommendations
+            st.markdown("## 📋 Clinical Recommendations")
+            if final_risk >= 30:
+                st.error(st.session_state.recommendations)
+            elif final_risk >= 20:
+                st.warning(st.session_state.recommendations)
+            else:
+                st.success(st.session_state.recommendations)
+            
+            # PDF Report Generation
+            st.markdown("---")
+            st.markdown("## 📄 Generate Report")
+            
+            patient_name = st.text_input("Patient Name for Report", placeholder="Enter patient name")
+            
+            if st.button("Generate PDF Report", type="primary"):
+                if not patient_name:
+                    st.warning("Please enter a patient name")
+                else:
+                    with st.spinner("Generating report..."):
+                        # Create sample LDL history (replace with real data)
+                        ldl_history = {
+                            'dates': [
+                                (datetime.now() - pd.Timedelta(days=90)).strftime('%Y-%m-%d'),
+                                (datetime.now() - pd.Timedelta(days=60)).strftime('%Y-%m-%d'),
+                                (datetime.now() - pd.Timedelta(days=30)).strftime('%Y-%m-%d'),
+                                datetime.now().strftime('%Y-%m-%d')
+                            ],
+                            'values': [
+                                ldl_results['current'] * 1.2,
+                                ldl_results['current'] * 1.1,
+                                ldl_results['current'],
+                                ldl_results['projected']
+                            ]
+                        }
+                        
+                        pdf_bytes = create_pdf_report(
+                            patient_data={
+                                'name': patient_name,
+                                'age': age,
+                                'sex': sex
+                            },
+                            risk_data={
+                                'baseline_risk': baseline_risk,
+                                'final_risk': final_risk,
+                                'current_ldl': ldl_results['current'],
+                                'ldl_target': ldl_results['target'],
+                                'recommendations': st.session_state.recommendations
+                            },
+                            ldl_history=ldl_history
+                        )
+                        
+                        st.download_button(
+                            label="⬇️ Download Full Report",
+                            data=pdf_bytes,
+                            file_name=f"PRIME_CVD_Report_{patient_name.replace(' ', '_')}_{datetime.now().date()}.pdf",
+                            mime="application/pdf"
+                        )
 
+# Run the app
 if __name__ == "__main__":
     main()
