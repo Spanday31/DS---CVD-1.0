@@ -265,6 +265,28 @@ def main():
             box-shadow: 1px 0 5px rgba(0,0,0,0.1);
         }
         
+        /* Section headers */
+        .section-header {
+            background-color: #3b82f6;
+            padding: 0.5rem;
+            border-radius: 5px;
+            color: white;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .risk-factors-header {
+            background-color: #10b981;
+        }
+        .vascular-header {
+            background-color: #8b5cf6;
+        }
+        .biomarkers-header {
+            background-color: #f59e0b;
+        }
+        .time-header {
+            background-color: #64748b;
+        }
+        
         /* Cards */
         .card {
             border-radius: 10px;
@@ -288,40 +310,14 @@ def main():
             background-color: #ecfdf5; 
         }
         
-        /* Buttons */
-        .stButton>button {
-            background-color: #3b82f6;
-            color: white;
-            border-radius: 8px;
-            padding: 0.5rem 1rem;
-            font-weight: 500;
-            transition: all 0.2s;
+        /* Logo styling */
+        .logo-container {
+            text-align: center;
+            margin-bottom: 1rem;
         }
-        .stButton>button:hover {
-            background-color: #2563eb;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        /* Tooltips */
-        .stTooltip {
-            background-color: #333 !important;
-            color: white !important;
-            padding: 0.5rem !important;
-            border-radius: 4px !important;
-        }
-        
-        /* Tabs */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 0.5rem;
-        }
-        .stTabs [data-baseweb="tab"] {
-            padding: 0.5rem 1rem;
-            border-radius: 8px 8px 0 0;
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: #3b82f6;
-            color: white;
+        .logo-img {
+            max-width: 80%;
+            margin: 0 auto;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -347,60 +343,113 @@ def main():
         """, unsafe_allow_html=True)
     
     with col2:
+        st.markdown('<div class="logo-container">', unsafe_allow_html=True)
         try:
             logo = Image.open("logo.png")
             st.image(logo, width=100)
         except:
             st.warning("Logo image not found")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     # ============ SIDEBAR ============
     with st.sidebar:
-        # Patient Mode Toggle
-        st.session_state.patient_mode = st.toggle("Patient-Friendly View", 
-                                                help="Simplified interface for patient education")
+        # Logo at the top
+        st.markdown('<div class="logo-container">', unsafe_allow_html=True)
+        try:
+            logo = Image.open("logo.png")
+            st.image(logo, use_column_width=True)
+        except:
+            st.warning("Logo not found (expected 'logo.png')")
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        # Patient Demographics
-        st.markdown("## Patient Demographics")
+        st.markdown("---")
+        
+        # PATIENT DEMOGRAPHICS
+        st.markdown("""
+        <div class="section-header">
+            <h3 style="color:white;margin:0;">Patient Demographics</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
         age = st.number_input("Age (years)", min_value=30, max_value=100, value=65)
         sex = st.radio("Sex", ["Male", "Female"], horizontal=True)
         
-        # Risk Factors
-        st.markdown("## Risk Factors")
+        st.markdown("---")
+        
+        # RISK FACTORS
+        st.markdown("""
+        <div class="section-header risk-factors-header">
+            <h3 style="color:white;margin:0;">Risk Factors</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
         diabetes = st.checkbox("Diabetes mellitus")
         smoker = st.checkbox("Current smoker")
         
-        # Vascular Disease
-        with st.expander("Territories of Known Vascular Disease"):
-            cad = st.checkbox("Coronary artery disease (CAD)")
-            stroke = st.checkbox("Cerebrovascular disease (Stroke/TIA)")
-            pad = st.checkbox("Peripheral artery disease (PAD)")
-            vasc_count = sum([cad, stroke, pad])
-        
-        # Biomarkers
-        with st.expander("Biomarkers"):
-            total_chol = st.number_input("Total Cholesterol (mmol/L)", 
-                                       min_value=2.0, max_value=10.0, value=5.0, step=0.1)
-            hdl = st.number_input("HDL-C (mmol/L)", 
-                                 min_value=0.5, max_value=3.0, value=1.0, step=0.1)
-            ldl = st.number_input("LDL-C (mmol/L)", 
-                                 min_value=0.5, max_value=6.0, value=3.5, step=0.1)
-            sbp = st.number_input("SBP (mmHg)", 
-                                 min_value=90, max_value=220, value=140)
-            if diabetes:
-                hba1c = st.number_input("HbA1c (%)", 
-                                       min_value=5.0, max_value=12.0, value=7.0, step=0.1)
-            egfr = st.slider("eGFR (mL/min/1.73m²)", 
-                             min_value=15, max_value=120, value=80)
-            crp = st.number_input("hs-CRP (mg/L) - baseline level", 
-                                 min_value=0.1, max_value=20.0, value=2.0, step=0.1,
-                                 help="Use baseline value (not during acute illness)")
-        
-        # Time Horizon
         st.markdown("---")
-        horizon = st.radio("Time Horizon", ["5yr", "10yr", "lifetime"], index=1)
         
-        # Save/Load
-        with st.expander("Save/Load Case"):
+        # VASCULAR DISEASE
+        st.markdown("""
+        <div class="section-header vascular-header">
+            <h3 style="color:white;margin:0;">Vascular Disease Territories</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        cad = st.checkbox("Coronary artery disease (CAD)")
+        stroke = st.checkbox("Cerebrovascular disease (Stroke/TIA)")
+        pad = st.checkbox("Peripheral artery disease (PAD)")
+        vasc_count = sum([cad, stroke, pad])
+        
+        st.markdown("---")
+        
+        # BIOMARKERS
+        st.markdown("""
+        <div class="section-header biomarkers-header">
+            <h3 style="color:white;margin:0;">Biomarkers</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        total_chol = st.number_input("Total Cholesterol (mmol/L)", 
+                                   min_value=2.0, max_value=10.0, value=5.0, step=0.1)
+        hdl = st.number_input("HDL-C (mmol/L)", 
+                             min_value=0.5, max_value=3.0, value=1.0, step=0.1)
+        ldl = st.number_input("LDL-C (mmol/L)", 
+                             min_value=0.5, max_value=6.0, value=3.5, step=0.1)
+        sbp = st.number_input("SBP (mmHg)", 
+                             min_value=90, max_value=220, value=140)
+        
+        if diabetes:
+            hba1c = st.number_input("HbA1c (%)", 
+                                   min_value=5.0, max_value=12.0, value=7.0, step=0.1)
+        
+        egfr = st.slider("eGFR (mL/min/1.73m²)", 
+                         min_value=15, max_value=120, value=80)
+        crp = st.number_input("hs-CRP (mg/L) - baseline level", 
+                             min_value=0.1, max_value=20.0, value=2.0, step=0.1,
+                             help="Use baseline value (not during acute illness)")
+        
+        st.markdown("---")
+        
+        # TIME HORIZON
+        st.markdown("""
+        <div class="section-header time-header">
+            <h3 style="color:white;margin:0;">Time Horizon</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        horizon = st.radio("Select time frame", ["5yr", "10yr", "lifetime"], 
+                          index=1, label_visibility="collapsed")
+        
+        st.markdown("---")
+        
+        # VIEW MODE
+        st.session_state.patient_mode = st.checkbox("Patient-Friendly View", 
+                                                  help="Simplified interface for patient education")
+        
+        st.markdown("---")
+        
+        # SAVE/LOAD
+        with st.expander("💾 Save/Load Case"):
             case_name = st.text_input("Case Name", placeholder="Patient ID or name")
             col1, col2 = st.columns(2)
             with col1:
